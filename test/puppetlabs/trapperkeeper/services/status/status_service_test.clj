@@ -57,6 +57,12 @@
     (register-status "fail" "4.2.0" 1 (fn [level] {:status "wheee", :state :error}))
     context))
 
+(defservice second-fail-service
+  [[:StatusService register-status]]
+  (init [this context]
+        (register-status "fail2" "4.2.0" 1 (fn [level] {:status "wheee", :state :error}))
+        context))
+
 (defservice slow-service
   [[:StatusService register-status]]
   (init [this context]
@@ -243,6 +249,65 @@
                 "message" (str "No status function with version 3 "
                             "found for service foo")}
               (json/parse-string (slurp (:body resp)))))))))
+
+
+(deftest simple-routes-params-ignoring-test
+  (with-status-service app
+    [foo-service]
+    (testing "ignores bad level"
+      (let [resp (http-client/get "http://localhost:8180/status/v1/simple?level=bar")]
+        (is (= 200 (:status resp)))
+        (is (= "running" (slurp (:body resp))))))
+    (testing "ignores alphabetic service_status_version"
+      (let [resp (http-client/get (str "http://localhost:8180/status/v1/"
+                                    "simple/foo?service_status_version=abc"))]
+        (is (= 200 (:status resp)))
+        (is (= "running" (slurp (:body resp))))))
+    (testing "ignores non-existent service_status_version"
+      (let [resp (http-client/get (str "http://localhost:8180/status/v1/"
+                                    "simple/foo?service_status_version=3"))]
+        (is (= 200 (:status resp)))
+        (is (= "running" (slurp (:body resp))))))))
+
+(deftest simple-routes-test
+  (testing "when calling the simple routes"
+    (testing "for all services"
+      (testing "and all services are :running"
+        (with-status-service app
+          [foo-service bar-service]
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple")]
+            (is (= 200 (:status resp)))
+            (is (= "running" (slurp (:body resp)))))))
+
+      (testing "and all services are :error"
+        (with-status-service app
+          [fail-service second-fail-service]
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple")]
+            (is (= 503 (:status resp)))
+            (is (= "error" (slurp (:body resp)))))))
+
+      (testing "and not all services are :running"
+        (with-status-service app
+          [foo-service baz-service]
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple")]
+            (is (= 503 (:status resp)))
+            (is (= "unknown" (slurp (:body resp))))))))
+
+    (testing "for a single service"
+      (with-status-service app
+        [foo-service baz-service]
+        (testing "and it is :running"
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple/foo")]
+            (is (= 200 (:status resp)))
+            (is (= "running" (slurp (:body resp))))))
+        (testing "and it is not :running"
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple/baz")]
+            (is (= 503 (:status resp)))
+            (is (= "unknown" (slurp (:body resp))))))
+        (testing "and it does not exist"
+          (let [resp (http-client/get "http://localhost:8180/status/v1/simple/kafka")]
+            (is (= 404 (:status resp)))
+            (is (= "not found: kafka" (slurp (:body resp))))))))))
 
 (defn response->status
   [resp]
